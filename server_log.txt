@@ -1,0 +1,29 @@
+[2026-08-22T21:58:36.499Z] Starting server process...
+[2026-08-22T21:58:36.862Z] STDERR: node:events:487
+[2026-08-22T21:58:36.863Z] STDERR:       throw er; // Unhandled 'error' event
+[2026-08-22T21:58:36.863Z] STDERR:       ^
+[2026-08-22T21:58:36.864Z] STDERR: 
+[2026-08-22T21:58:36.865Z] STDERR: Error: listen EADDRINUSE: address already in use :::3000
+[2026-08-22T21:58:36.866Z] STDERR:     at Server.setupListenHandle [as _listen2] (node:net:2167:16)
+[2026-08-22T21:58:36.867Z] STDERR:     at listenInCluster (node:net:2224:12)
+[2026-08-22T21:58:36.867Z] STDERR:     at Server.listen (node:net:2344:7)
+[2026-08-22T21:58:36.868Z] STDERR:     at app.listen (C:\Users\user\Documents\trae_projects\employ\node_modules\express\lib\application.js:635:24)
+[2026-08-22T21:58:36.869Z] STDERR:     at Object.<anonymous> (C:\Users\user\Documents\trae_projects\employ\server.js:279:5)
+[2026-08-22T21:58:36.870Z] STDERR:     at Module._compile (node:internal/modules/cjs/loader:1872:14)
+[2026-08-22T21:58:36.871Z] STDERR:     at Object..js (node:internal/modules/cjs/loader:2003:10)
+[2026-08-22T21:58:36.871Z] STDERR:     at Module.load (node:internal/modules/cjs/loader:1594:32)
+[2026-08-22T21:58:36.872Z] STDERR:     at Module._load (node:internal/modules/cjs/loader:1396:12)
+[2026-08-22T21:58:36.873Z] STDERR:     at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+[2026-08-22T21:58:36.874Z] STDERR: Emitted 'error' event on Server instance at:
+[2026-08-22T21:58:36.874Z] STDERR:     at emitErrorNT (node:net:2203:8)
+[2026-08-22T21:58:36.875Z] STDERR:     at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+[2026-08-22T21:58:36.876Z] STDERR:   code: 'EADDRINUSE',
+[2026-08-22T21:58:36.876Z] STDERR:   errno: -4091,
+[2026-08-22T21:58:36.877Z] STDERR:   syscall: 'listen',
+[2026-08-22T21:58:36.878Z] STDERR:   address: '::',
+[2026-08-22T21:58:36.879Z] STDERR:   port: 3000
+[2026-08-22T21:58:36.879Z] STDERR: }
+[2026-08-22T21:58:36.880Z] STDERR: 
+[2026-08-22T21:58:36.881Z] STDERR: Node.js v24.19.0
+[2026-08-22T21:58:36.884Z] Server process exited with code 1
+[2026-08-22T21:58:41.532Z] --- Server still running? pid=13496 killed=false ---

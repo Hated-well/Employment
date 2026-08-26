@@ -1,0 +1,6 @@
+[2026-08-22T22:01:39.017Z] Killing 2860
+[2026-08-22T22:01:41.729Z] Launching server...
+[2026-08-22T22:01:42.090Z] OUT 🚀 CoreStory Careers Server running on http://localhost:8080
+[2026-08-22T22:01:42.091Z] OUT 📧 Application submissions will be sent to: lucaslucyltd@gmail.com
+[2026-08-22T22:01:42.092Z] OUT 💡 Don't forget to configure your SMTP settings in .env file
+[2026-08-22T22:01:45.334Z] HEALTH 200: {"status":"ok","timestamp":"2026-08-22T22:01:45.328Z"}

@@ -1,0 +1,16 @@
+[2026-08-22T21:57:39.602Z] Starting setup script...
+[2026-08-22T21:57:39.604Z] CWD: C:\Users\user\Documents\trae_projects\employ
+[2026-08-22T21:57:39.605Z] node_modules not found, starting npm install...
+[2026-08-22T21:57:52.048Z] npm install stdout:
+npm warn deprecated multer@1.4.5-lts.2: Multer 1.x is impacted by a number of vulnerabilities, which have been patched in 2.x. You should upgrade to the latest 2.x version.
+
+added 119 packages in 12s
+
+[2026-08-22T21:57:52.050Z] PACKAGE OK: express
+[2026-08-22T21:57:52.052Z] PACKAGE OK: multer
+[2026-08-22T21:57:52.054Z] PACKAGE OK: nodemailer
+[2026-08-22T21:57:52.056Z] PACKAGE OK: cors
+[2026-08-22T21:57:52.059Z] PACKAGE OK: dotenv
+[2026-08-22T21:57:52.061Z] PACKAGE OK: express-rate-limit
+[2026-08-22T21:57:52.061Z] All packages installed successfully.
+[2026-08-22T21:57:52.062Z] Setup complete.
