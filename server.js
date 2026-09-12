@@ -17,9 +17,8 @@ const uploadDir = path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
 const dataDir = path.join(__dirname, 'data');
 const adminDir = path.join(__dirname, 'public', 'admin');
 
-[uploadDir, dataDir, adminDir].forEach(dir => {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-});
+const uploadDir = path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
+const dataDir = path.join(__dirname, 'data');
 
 const appsFile = path.join(dataDir, 'applications.json');
 if (!fs.existsSync(appsFile)) fs.writeFileSync(appsFile, '[]', 'utf8');
