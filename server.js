@@ -17,6 +17,9 @@ const uploadDir = process.env.VERCEL ? '/tmp/uploads' : path.join(__dirname, pro
 const dataDir = process.env.VERCEL ? '/tmp/data' : path.join(__dirname, 'data');
 const adminDir = path.join(__dirname, 'public', 'admin');
 
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
 const appsFile = path.join(dataDir, 'applications.json');
 if (!fs.existsSync(appsFile)) fs.writeFileSync(appsFile, '[]', 'utf8');
 
