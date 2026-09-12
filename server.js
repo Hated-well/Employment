@@ -577,22 +577,26 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, message: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  const border = '='.repeat(60);
-  console.log('\n' + border);
-  console.log('🚀 CoreStory Careers Server RUNNING');
-  console.log(border);
-  console.log(`🌐 Website:        http://localhost:${PORT}/`);
-  console.log(`📝 Apply Page:     http://localhost:${PORT}/apply`);
-  console.log(`🔐 Admin Login:    http://localhost:${PORT}/admin`);
-  console.log(`   Username:       ${ADMIN_USERNAME}`);
-  console.log(`   Password:       ${ADMIN_PASSWORD}`);
-  console.log(`💾 Apps Stored:    ${loadApplications().length} total`);
-  console.log(`📁 Uploads Dir:    ${uploadDir}`);
-  if (process.env.SMTP_PASS && process.env.SMTP_PASS !== 'your_app_password_here') {
-    console.log(`📧 Email Enabled:  YES (${process.env.SMTP_USER})`);
-  } else {
-    console.log(`📧 Email Enabled:  NO (saved to dashboard only — set SMTP_PASS in .env)`);
-  }
-  console.log(border + '\n');
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    const border = '='.repeat(60);
+    console.log('\n' + border);
+    console.log('🚀 CoreStory Careers Server RUNNING');
+    console.log(border);
+    console.log(`🌐 Website:        http://localhost:${PORT}/`);
+    console.log(`📝 Apply Page:     http://localhost:${PORT}/apply`);
+    console.log(`🔐 Admin Login:    http://localhost:${PORT}/admin`);
+    console.log(`   Username:       ${ADMIN_USERNAME}`);
+    console.log(`   Password:       ${ADMIN_PASSWORD}`);
+    console.log(`💾 Apps Stored:    ${loadApplications().length} total`);
+    console.log(`📁 Uploads Dir:    ${uploadDir}`);
+    if (process.env.SMTP_PASS && process.env.SMTP_PASS !== 'your_app_password_here') {
+      console.log(`📧 Email Enabled:  YES (${process.env.SMTP_USER})`);
+    } else {
+      console.log(`📧 Email Enabled:  NO (saved to dashboard only — set SMTP_PASS in .env)`);
+    }
+    console.log(border + '\n');
+  });
+}
+
+module.exports = app;
