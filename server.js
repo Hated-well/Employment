@@ -13,8 +13,8 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const uploadDir = path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
-const dataDir = path.join(__dirname, 'data');
+const uploadDir = process.env.VERCEL ? '/tmp/uploads' : path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
+const dataDir = process.env.VERCEL ? '/tmp/data' : path.join(__dirname, 'data');
 const adminDir = path.join(__dirname, 'public', 'admin');
 
 const uploadDir = path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
