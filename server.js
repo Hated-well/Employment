@@ -215,7 +215,8 @@ app.post('/api/admin/login', loginLimiter, (req, res) => {
 });
 
 app.post('/api/admin/logout', (req, res) => {
-  req.session.destroy(() => res.json({ success: true }));
+  req.session = null;
+  res.json({ success: true });
 });
 
 app.get('/api/admin/me', (req, res) => {
