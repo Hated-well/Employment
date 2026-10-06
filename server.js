@@ -12,6 +12,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 const uploadDir = process.env.VERCEL ? '/tmp/uploads' : path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
@@ -34,7 +35,8 @@ app.use(cookieSession({
   keys: [sessionSecret],
   maxAge: 24 * 60 * 60 * 1000,
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production'
+  secure: true,
+  sameSite: 'lax'
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
