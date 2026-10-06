@@ -1,5 +1,5 @@
 require('dotenv').config();
-const express = require('express');
+const cookieSession = require('cookie-session');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
 const cors = require('cors');
@@ -28,15 +28,12 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-app.use(session({
-  secret: sessionSecret,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 24 * 60 * 60 * 1000
-  }
+app.use(cookieSession({
+  name: 'session',
+  keys: [sessionSecret],
+  maxAge: 24 * 60 * 60 * 1000,
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production'
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
