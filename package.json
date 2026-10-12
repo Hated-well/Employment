@@ -8,6 +8,7 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "mongodb": "^6.8.0",
     "cookie-session": "^2.1.0",
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
