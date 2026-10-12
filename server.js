@@ -5,26 +5,87 @@ const multer = require('multer');
 const nodemailer = require('nodemailer');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
 const rateLimit = require('express-rate-limit');
-const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
-const uploadDir = process.env.VERCEL ? '/tmp/uploads' : path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
-const dataDir = process.env.VERCEL ? '/tmp/data' : path.join(__dirname, 'data');
-const adminDir = path.join(__dirname, 'public', 'admin');
+// =====================================================
+// DATABASE (MongoDB Atlas) - applications + uploaded files
+// =====================================================
+let clientPromise = null;
 
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+function getDb() {
+  if (!process.env.MONGODB_URI) {
+    return Promise.reject(new Error('MONGODB_URI is not set in the environment variables'));
+  }
+  if (!clientPromise) {
+    clientPromise = new MongoClient(process.env.MONGODB_URI).connect().catch(err => {
+      clientPromise = null;
+      throw err;
+    });
+  }
+  return clientPromise.then(client => client.db(process.env.MONGODB_DB || 'corestory'));
+}
 
-const appsFile = path.join(dataDir, 'applications.json');
-if (!fs.existsSync(appsFile)) fs.writeFileSync(appsFile, '[]', 'utf8');
+async function loadApplications() {
+  const db = await getDb();
+  return db.collection('applications').find({}, { projection: { _id: 0 } }).sort({ submittedAt: 1 }).toArray();
+}
 
+async function findApplication(id) {
+  const db = await getDb();
+  return db.collection('applications').findOne({ id }, { projection: { _id: 0 } });
+}
+
+async function insertApplication(doc) {
+  const db = await getDb();
+  await db.collection('applications').insertOne(doc);
+}
+
+async function updateApplication(id, patch) {
+  const db = await getDb();
+  await db.collection('applications').updateOne({ id }, { $set: patch });
+}
+
+async function deleteApplication(id) {
+  const db = await getDb();
+  await db.collection('applications').deleteOne({ id });
+}
+
+async function saveFileBlobs(appId, files) {
+  if (!files.length) return;
+  const db = await getDb();
+  await db.collection('files').insertMany(files.map(f => ({
+    appId,
+    storedName: f.filename,
+    originalName: f.originalname,
+    mimeType: f.mimetype,
+    size: f.size,
+    data: f.buffer.toString('base64')
+  })));
+}
+
+async function getFileBlob(appId, storedName) {
+  const db = await getDb();
+  return db.collection('files').findOne({ appId, storedName });
+}
+
+async function deleteFileBlobs(appId) {
+  const db = await getDb();
+  await db.collection('files').deleteMany({ appId });
+}
+
+// Lets async routes pass errors to the error handler at the bottom
+const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// =====================================================
+// MIDDLEWARE
+// =====================================================
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -35,7 +96,7 @@ app.use(cookieSession({
   keys: [sessionSecret],
   maxAge: 24 * 60 * 60 * 1000,
   httpOnly: true,
-  secure: true,
+  secure: !!process.env.VERCEL || process.env.NODE_ENV === 'production',
   sameSite: 'lax'
 }));
 
@@ -53,17 +114,9 @@ function requireAuth(req, res, next) {
   return res.redirect('/admin/login.html');
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const timestamp = Date.now();
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    cb(null, `${timestamp}-${safeName}`);
-  }
-});
-
+// Files are kept in memory while the request runs, then saved to MongoDB
 const upload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /pdf|doc|docx|txt|rtf|jpg|jpeg|png|gif|bmp|webp|heic|heif/;
@@ -94,22 +147,27 @@ const loginLimiter = rateLimit({
   message: { success: false, message: 'Too many login attempts. Try again later.' }
 });
 
-function loadApplications() {
-  try {
-    const raw = fs.readFileSync(appsFile, 'utf8');
-    return JSON.parse(raw) || [];
-  } catch (e) { return []; }
-}
-function saveApplications(list) {
-  fs.writeFileSync(appsFile, JSON.stringify(list, null, 2), 'utf8');
+// =====================================================
+// HELPERS
+// =====================================================
+const FORM_FIELDS = [
+  'firstName', 'lastName', 'address', 'city', 'state', 'zipCode', 'email', 'phone', 'ssn',
+  'source', 'referral', 'referrerName', 'previousEmployee', 'linkedin', 'idType', 'resumeText'
+];
+
+function pickFormData(body) {
+  const out = {};
+  FORM_FIELDS.forEach(k => {
+    if (body && body[k] !== undefined && body[k] !== null) out[k] = String(body[k]);
+  });
+  return out;
 }
 
 function fileMeta(arr, kind) {
-  if (!arr || !Array.isArray(arr) || arr.length === 0) return [];
+  if (!Array.isArray(arr) || arr.length === 0) return [];
   return arr.map(f => ({
     originalName: f.originalname,
     storedName: f.filename,
-    path: f.path,
     size: f.size,
     mimeType: f.mimetype,
     kind: kind || ''
@@ -128,16 +186,17 @@ function createTransporter() {
   } catch (e) { return null; }
 }
 
+const row = (label, value, first) =>
+  `<tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;${first ? ' width: 30%;' : ''}">${label}</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${value}</td></tr>`;
+
+const sectionTitle = (title) =>
+  `<div style="border-left: 4px solid #d4af37; padding-left: 15px; margin-bottom: 25px;"><h2 style="color: #1a2332; margin: 0 0 5px 0;">${title}</h2></div>`;
+
 function buildApplicationEmail(formData, files) {
   const fileInfo = (metaArr) => {
     if (!metaArr || metaArr.length === 0) return 'Not uploaded';
     return metaArr.map(f => `${f.originalName} (${(f.size / 1024).toFixed(2)} KB)`).join(', ');
   };
-  const rMeta = files.resume || [];
-  const idf = files.idCardFront || [];
-  const idb = files.idCardBack || [];
-  const sf = files.selfie || [];
-  const af = files.additionalFiles || [];
 
   return `
     <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
@@ -151,32 +210,32 @@ function buildApplicationEmail(formData, files) {
           <p style="color: #718096; margin: 0;">Submitted on ${new Date().toLocaleString()}</p>
         </div>
         <table style="width: 100%; border-collapse: collapse; margin-bottom: 25px;">
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748; width: 30%;">First Name</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.firstName || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Last Name</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.lastName || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Address</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.address || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">City</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.city || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">State</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.state || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Zip Code</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.zipCode || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Email</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.email || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Phone</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.phone || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">SSN</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.ssn || '-'}</td></tr>
+          ${row('First Name', formData.firstName || '-', true)}
+          ${row('Last Name', formData.lastName || '-')}
+          ${row('Address', formData.address || '-')}
+          ${row('City', formData.city || '-')}
+          ${row('State', formData.state || '-')}
+          ${row('Zip Code', formData.zipCode || '-')}
+          ${row('Email', formData.email || '-')}
+          ${row('Phone', formData.phone || '-')}
+          ${row('SSN', formData.ssn || '-')}
         </table>
-        <div style="border-left: 4px solid #d4af37; padding-left: 15px; margin-bottom: 25px;"><h2 style="color: #1a2332; margin: 0 0 5px 0;">Additional Information</h2></div>
+        ${sectionTitle('Additional Information')}
         <table style="width: 100%; border-collapse: collapse; margin-bottom: 25px;">
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748; width: 30%;">Source</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.source || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Referral</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.referral === 'yes' ? `Yes - ${formData.referrerName || 'N/A'}` : 'No'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Prev Employee</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.previousEmployee || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">LinkedIn</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.linkedin || '-'}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">ID Type</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${formData.idType || '-'}</td></tr>
+          ${row('Source', formData.source || '-', true)}
+          ${row('Referral', formData.referral === 'yes' ? `Yes - ${formData.referrerName || 'N/A'}` : 'No')}
+          ${row('Prev Employee', formData.previousEmployee || '-')}
+          ${row('LinkedIn', formData.linkedin || '-')}
+          ${row('ID Type', formData.idType || '-')}
         </table>
-        ${formData.resumeText ? `<div style="border-left: 4px solid #d4af37; padding-left: 15px; margin-bottom: 25px;"><h2 style="color: #1a2332; margin: 0 0 5px 0;">Resume Text</h2></div><div style="background: #f7fafc; padding: 15px; border-radius: 8px; white-space: pre-wrap; color: #4a5568; margin-bottom: 25px;">${formData.resumeText}</div>` : ''}
-        <div style="border-left: 4px solid #d4af37; padding-left: 15px; margin-bottom: 25px;"><h2 style="color: #1a2332; margin: 0 0 5px 0;">Documents</h2></div>
+        ${formData.resumeText ? `${sectionTitle('Resume Text')}<div style="background: #f7fafc; padding: 15px; border-radius: 8px; white-space: pre-wrap; color: #4a5568; margin-bottom: 25px;">${formData.resumeText}</div>` : ''}
+        ${sectionTitle('Documents')}
         <table style="width: 100%; border-collapse: collapse;">
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748; width: 30%;">Resume</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${fileInfo(rMeta)}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">ID Front</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${fileInfo(idf)}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">ID Back</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${fileInfo(idb)}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Selfie</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${fileInfo(sf)}</td></tr>
-          <tr><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Additional</td><td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #4a5568;">${fileInfo(af)}</td></tr>
+          ${row('Resume', fileInfo(files.resume), true)}
+          ${row('ID Front', fileInfo(files.idCardFront))}
+          ${row('ID Back', fileInfo(files.idCardBack))}
+          ${row('Selfie', fileInfo(files.selfie))}
+          ${row('Additional', fileInfo(files.additionalFiles))}
         </table>
       </div>
     </div>`;
@@ -200,7 +259,11 @@ function buildConfirmationEmail(formData, refId) {
     </div>`;
 }
 
-// ===== Admin Login =====
+const addKind = (arr, k) => Array.isArray(arr) ? arr.map(x => ({ ...x, kind: x.kind || k })) : [];
+
+// =====================================================
+// ADMIN LOGIN
+// =====================================================
 app.post('/api/admin/login', loginLimiter, (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
@@ -230,7 +293,9 @@ app.get('/api/admin/me', (req, res) => {
   }
 });
 
-// ===== Admin Dashboard Routes =====
+// =====================================================
+// ADMIN DASHBOARD ROUTES
+// =====================================================
 app.get('/admin', (req, res) => {
   if (req.session && req.session.authenticated) {
     return res.sendFile(path.join(__dirname, 'public', 'admin', 'dashboard.html'));
@@ -242,8 +307,8 @@ app.get('/admin/login.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin', 'login.html'));
 });
 
-app.get('/api/admin/stats', requireAuth, (req, res) => {
-  const apps = loadApplications();
+app.get('/api/admin/stats', requireAuth, wrap(async (req, res) => {
+  const apps = await loadApplications();
   const now = Date.now();
   const last24h = apps.filter(a => now - a.submittedAt < 86400000).length;
   const last7d = apps.filter(a => now - a.submittedAt < 7 * 86400000).length;
@@ -263,10 +328,10 @@ app.get('/api/admin/stats', requireAuth, (req, res) => {
   const topSources = Object.entries(sources).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, count]) => ({ _id: name, source: name, count }));
   const recent = apps.slice(-5).reverse().map(a => ({
     id: a.id,
-    firstName: a.formData.firstName,
-    lastName: a.formData.lastName,
-    email: a.formData.email,
-    state: a.formData.state,
+    firstName: (a.formData || {}).firstName,
+    lastName: (a.formData || {}).lastName,
+    email: (a.formData || {}).email,
+    state: (a.formData || {}).state,
     createdAt: a.submittedAt,
     status: a.status || 'New'
   }));
@@ -277,10 +342,10 @@ app.get('/api/admin/stats', requireAuth, (req, res) => {
     sources: topSources,
     recent
   });
-});
+}));
 
-app.get('/api/admin/submissions', requireAuth, (req, res) => {
-  const apps = loadApplications();
+app.get('/api/admin/submissions', requireAuth, wrap(async (req, res) => {
+  const apps = await loadApplications();
   const { search = '', status = '', sort = 'newest' } = req.query;
   let list = apps.slice();
   if (status) list = list.filter(a => (a.status || 'New') === status);
@@ -302,7 +367,6 @@ app.get('/api/admin/submissions', requireAuth, (req, res) => {
   const summary = list.map(a => {
     const fd = a.formData || {};
     const f = a.files || {};
-    const addKind = (arr, k) => Array.isArray(arr) ? arr.map(x => ({ ...x, kind: x.kind || k })) : [];
     const resumeArr = addKind(f.resume, 'resume');
     const idFrontArr = addKind(f.idCardFront, 'idCardFront');
     const idBackArr = addKind(f.idCardBack, 'idCardBack');
@@ -341,25 +405,23 @@ app.get('/api/admin/submissions', requireAuth, (req, res) => {
     };
   });
   res.json(summary);
-});
+}));
 
-app.get('/api/admin/submissions/:id', requireAuth, (req, res) => {
-  const apps = loadApplications();
-  const app = apps.find(a => a.id === req.params.id);
-  if (!app) return res.status(404).json({ error: 'Not found', message: 'Not found' });
-  app.read = true;
-  saveApplications(apps);
-  const fd = app.formData || {};
-  const f = app.files || {};
-  const addKind = (arr, k) => Array.isArray(arr) ? arr.map(x => ({ ...x, kind: x.kind || k })) : [];
+app.get('/api/admin/submissions/:id', requireAuth, wrap(async (req, res) => {
+  const found = await findApplication(req.params.id);
+  if (!found) return res.status(404).json({ error: 'Not found', message: 'Not found' });
+  await updateApplication(found.id, { read: true });
+  found.read = true;
+  const fd = found.formData || {};
+  const f = found.files || {};
   const resumeArr = addKind(f.resume, 'resume');
   const idFrontArr = addKind(f.idCardFront, 'idCardFront');
   const idBackArr = addKind(f.idCardBack, 'idCardBack');
   const selfieArr = addKind(f.selfie, 'selfie');
   const addlArr = addKind(f.additionalFiles, 'additionalFiles');
-  const detail = {
-    id: app.id,
-    referenceId: app.referenceId,
+  res.json({
+    id: found.id,
+    referenceId: found.referenceId,
     firstName: fd.firstName,
     lastName: fd.lastName,
     address: fd.address,
@@ -381,81 +443,54 @@ app.get('/api/admin/submissions/:id', requireAuth, (req, res) => {
     idCardBack: idBackArr,
     selfie: selfieArr,
     additionalFiles: addlArr,
-    notes: app.notes || '',
-    status: app.status || 'New',
-    read: !!app.read,
-    createdAt: app.submittedAt,
-    submittedAt: app.submittedAt,
-    updatedAt: app.updatedAt
-  };
-  res.json(detail);
-});
+    notes: found.notes || '',
+    status: found.status || 'New',
+    read: !!found.read,
+    createdAt: found.submittedAt,
+    submittedAt: found.submittedAt,
+    updatedAt: found.updatedAt
+  });
+}));
 
-app.patch('/api/admin/submissions/:id', requireAuth, (req, res) => {
-  const apps = loadApplications();
-  const idx = apps.findIndex(a => a.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Not found', message: 'Not found' });
+app.patch('/api/admin/submissions/:id', requireAuth, wrap(async (req, res) => {
+  const existing = await findApplication(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found', message: 'Not found' });
   const { status, notes, read } = req.body || {};
-  if (typeof status === 'string') apps[idx].status = status;
-  if (typeof notes === 'string') apps[idx].notes = notes;
-  if (typeof read === 'boolean') apps[idx].read = read;
-  apps[idx].updatedAt = Date.now();
-  saveApplications(apps);
-  const fd = apps[idx].formData || {};
-  const f = apps[idx].files || {};
+  const patch = { updatedAt: Date.now() };
+  if (typeof status === 'string') patch.status = status;
+  if (typeof notes === 'string') patch.notes = notes;
+  if (typeof read === 'boolean') patch.read = read;
+  await updateApplication(existing.id, patch);
+  const updated = Object.assign({}, existing, patch);
+  const fd = updated.formData || {};
   res.json({
-    id: apps[idx].id,
+    id: updated.id,
     firstName: fd.firstName, lastName: fd.lastName, email: fd.email,
-    status: apps[idx].status || 'New',
-    notes: apps[idx].notes || '',
-    read: !!apps[idx].read
+    status: updated.status || 'New',
+    notes: updated.notes || '',
+    read: !!updated.read
   });
-});
+}));
 
-app.delete('/api/admin/submissions/:id', requireAuth, (req, res) => {
-  const apps = loadApplications();
-  const idx = apps.findIndex(a => a.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Not found', message: 'Not found' });
-  const app = apps[idx];
-  const f = app.files || {};
-  const all = [].concat(f.resume || [], f.idCardFront || [], f.idCardBack || [], f.selfie || [], f.additionalFiles || []);
-  all.forEach(file => {
-    const p = file.path || file.storedPath || (file.storedName ? path.join(uploadDir, file.storedName) : null);
-    if (p && fs.existsSync(p)) { try { fs.unlinkSync(p); } catch (e) {} }
-  });
-  apps.splice(idx, 1);
-  saveApplications(apps);
+app.delete('/api/admin/submissions/:id', requireAuth, wrap(async (req, res) => {
+  const existing = await findApplication(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found', message: 'Not found' });
+  await deleteFileBlobs(existing.id);
+  await deleteApplication(existing.id);
   res.json({ success: true });
-});
+}));
 
-app.get('/api/admin/files/:type/:id/:fileName', requireAuth, (req, res) => {
-  const apps = loadApplications();
-  const app = apps.find(a => a.id === req.params.id);
-  if (!app) return res.status(404).send('Not found');
-  const files = app.files || {};
-  const typeMap = {
-    resume: 'resume',
-    idCardFront: 'idCardFront',
-    idCardBack: 'idCardBack',
-    idCard: 'idCardFront',
-    selfie: 'selfie',
-    additionalFiles: 'additionalFiles',
-    additional: 'additionalFiles'
-  };
-  let candidates = [];
-  const t = typeMap[req.params.type] || req.params.type;
-  if (t === 'additionalFiles') candidates = files.additionalFiles || [];
-  else if (t && files[t]) candidates = files[t] || [];
-  let match = candidates.find(f => f.storedName === req.params.fileName);
-  if (!match) {
-    const all = [...(files.resume || []), ...(files.idCardFront || []), ...(files.idCardBack || []), ...(files.selfie || []), ...(files.additionalFiles || [])];
-    match = all.find(f => f.storedName === req.params.fileName);
-  }
+app.get('/api/admin/files/:type/:id/:fileName', requireAuth, wrap(async (req, res) => {
+  const found = await findApplication(req.params.id);
+  if (!found) return res.status(404).send('Not found');
+  const f = found.files || {};
+  const all = [].concat(f.resume || [], f.idCardFront || [], f.idCardBack || [], f.selfie || [], f.additionalFiles || []);
+  const match = all.find(x => x.storedName === req.params.fileName);
   if (!match) return res.status(404).send('Not found');
-  const fullPath = path.resolve(match.path);
-  if (!fullPath.startsWith(uploadDir)) return res.status(403).send('Forbidden');
-  if (!fs.existsSync(fullPath)) return res.status(404).send('File missing');
-  const mt = (match.mimeType || require('mime-types').lookup(fullPath) || 'application/octet-stream').toString();
+  const blob = await getFileBlob(found.id, match.storedName);
+  if (!blob) return res.status(404).send('File missing');
+  const buffer = Buffer.from(blob.data, 'base64');
+  const mt = (match.mimeType || blob.mimeType || 'application/octet-stream').toString();
   const inlineDisposition = /^image\//.test(mt) || mt === 'application/pdf';
   const disposition = inlineDisposition ? 'inline' : 'attachment';
   const safeName = match.originalName || match.storedName;
@@ -463,10 +498,12 @@ app.get('/api/admin/files/:type/:id/:fileName', requireAuth, (req, res) => {
   res.setHeader('Content-Type', mt);
   res.setHeader('Content-Disposition', `${disposition}; filename="${safeName.replace(/"/g, '')}"; filename*=UTF-8''${encoded}`);
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.sendFile(fullPath, { headers: { 'Content-Length': fs.statSync(fullPath).size } });
-});
+  res.send(buffer);
+}));
 
-// ===== Application Submit =====
+// =====================================================
+// APPLICATION SUBMIT
+// =====================================================
 app.post('/api/submit-application', submitLimiter, (req, res) => {
   uploadFields(req, res, async (err) => {
     if (err) {
@@ -474,7 +511,7 @@ app.post('/api/submit-application', submitLimiter, (req, res) => {
       return res.status(400).json({ success: false, message: err.message || 'File upload error' });
     }
     try {
-      const formData = req.body || {};
+      const formData = pickFormData(req.body);
       const rawFiles = req.files || {};
 
       const requiredFields = ['firstName', 'lastName', 'address', 'city', 'state', 'email', 'phone', 'source', 'referral', 'previousEmployee'];
@@ -487,6 +524,16 @@ app.post('/api/submit-application', submitLimiter, (req, res) => {
 
       const refId = 'CS-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
       const applicationId = crypto.randomUUID();
+
+      // Give every uploaded file a unique stored name
+      const allUploaded = [];
+      Object.keys(rawFiles).forEach(kind => {
+        (rawFiles[kind] || []).forEach(f => {
+          const safeName = f.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+          f.filename = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${safeName}`;
+          allUploaded.push(f);
+        });
+      });
 
       const submission = {
         id: applicationId,
@@ -507,22 +554,20 @@ app.post('/api/submit-application', submitLimiter, (req, res) => {
         }
       };
 
-      const apps = loadApplications();
-      apps.push(submission);
-      saveApplications(apps);
+      // Save the files first, then the application record
+      await saveFileBlobs(applicationId, allUploaded);
+      await insertApplication(submission);
 
       // Send emails only if SMTP configured
       const transporter = createTransporter();
       let emailSent = false;
       if (transporter) {
         try {
-          const attachments = [];
-          const attachAll = (arr) => { if (arr) arr.forEach(f => attachments.push({ filename: f.originalname, path: f.path, contentType: f.mimeType })); };
-          attachAll(rawFiles.resume);
-          attachAll(rawFiles.idCardFront);
-          attachAll(rawFiles.idCardBack);
-          attachAll(rawFiles.selfie);
-          attachAll(rawFiles.additionalFiles);
+          const attachments = allUploaded.map(f => ({
+            filename: f.originalname,
+            content: f.buffer,
+            contentType: f.mimetype
+          }));
 
           const adminMail = {
             from: `"CoreStory Careers" <${process.env.SMTP_USER}>`,
@@ -542,7 +587,7 @@ app.post('/api/submit-application', submitLimiter, (req, res) => {
           await transporter.sendMail(confirmMail);
           emailSent = true;
         } catch (mailErr) {
-          console.error('Email failed (stored locally):', mailErr.message);
+          console.error('Email failed (application is saved in the dashboard):', mailErr.message);
         }
       }
 
@@ -579,23 +624,9 @@ app.use((err, req, res, next) => {
 
 if (require.main === module) {
   app.listen(PORT, () => {
-    const border = '='.repeat(60);
-    console.log('\n' + border);
-    console.log('🚀 CoreStory Careers Server RUNNING');
-    console.log(border);
-    console.log(`🌐 Website:        http://localhost:${PORT}/`);
-    console.log(`📝 Apply Page:     http://localhost:${PORT}/apply`);
-    console.log(`🔐 Admin Login:    http://localhost:${PORT}/admin`);
-    console.log(`   Username:       ${ADMIN_USERNAME}`);
-    console.log(`   Password:       ${ADMIN_PASSWORD}`);
-    console.log(`💾 Apps Stored:    ${loadApplications().length} total`);
-    console.log(`📁 Uploads Dir:    ${uploadDir}`);
-    if (process.env.SMTP_PASS && process.env.SMTP_PASS !== 'your_app_password_here') {
-      console.log(`📧 Email Enabled:  YES (${process.env.SMTP_USER})`);
-    } else {
-      console.log(`📧 Email Enabled:  NO (saved to dashboard only — set SMTP_PASS in .env)`);
-    }
-    console.log(border + '\n');
+    console.log(`CoreStory Careers server running on http://localhost:${PORT}/`);
+    console.log(`Admin login: http://localhost:${PORT}/admin`);
+    console.log(process.env.MONGODB_URI ? 'Database: MongoDB connected via MONGODB_URI' : 'WARNING: MONGODB_URI is not set - saving applications will fail');
   });
 }
 
